@@ -9,6 +9,8 @@
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/libs" />
             <option value="$PROJECT_DIR$/libs/contract" />
+            <option value="$PROJECT_DIR$/services" />
+            <option value="$PROJECT_DIR$/services/core" />
           </set>
         </option>
         <option name="myGradleHome" value="" />

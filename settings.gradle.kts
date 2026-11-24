@@ -11,3 +11,4 @@ dependencyResolutionManagement {
 rootProject.name = "corridor"
 
 include(":libs:contract")
+include(":services:core")

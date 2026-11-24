@@ -5,8 +5,6 @@ build/
 !**/src/test/**/build/
 
 ### IntelliJ IDEA ###
-# Політика: у git іде те, що має бути однаковим у IDE, у CLI та в агента.
-# Особисте й локальне — не йде ніколи.
 .idea/*
 !.idea/.gitignore
 !.idea/misc.xml
@@ -16,9 +14,6 @@ build/
 !.idea/runConfigurations/
 !.idea/codeStyles/
 !.idea/inspectionProfiles/
-
-# Згенероване з Gradle-моделі: відтворюється само, тримати в git нема сенсу.
-# modules.xml, compiler.xml, libraries/, jarRepositories.xml — саме тому під .idea/*
 
 *.iml
 *.iws
@@ -51,6 +46,5 @@ bin/
 ### Mac OS ###
 .DS_Store
 
-# локальні секрети та логи
 .env
 *.log
