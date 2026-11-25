@@ -8,11 +8,11 @@
 
 Сервіс `core` працює на Spring Boot 4.2.0. Є перший вертикальний зріз `orders`: Flyway-міграція створює таблицю, домен і `JdbcClient`-репозиторій читають і пишуть замовлення, `POST /api/v1/orders` і `GET /api/v1/orders/{id}` працюють, неіснуючий id дає `404`.
 
-Тести проходять: `PostgresConnectionTest`, `OrderRepositoryTest` (зріз `@JdbcTest`) і `OrderApiTest` (повний контекст + `@AutoConfigureMockMvc`). Разом 4 тести, 0 падінь. `.\gradlew.bat build` зелений.
+Тести проходять: `PostgresConnectionTest`, `OrderRepositoryTest` (зріз `@JdbcTest`), `OrderApiTest` (повний контекст + `@AutoConfigureMockMvc`) і `OrderMappingsTest` (чистий JUnit, без Spring). Разом 5 тестів, 0 падінь. `.\gradlew.bat build` зелений.
 
-`libs/contract` поки що порожній: `OrderId` переїхав у домен `core` і тепер обгортає `UUID`. Wire-типи повернуться в контракт разом із першою подією.
+`libs/contract` більше не порожній: там `OrderCreated(orderId: UUID, occurredAt: Instant)`, і модуль досі має нуль залежностей. `core` залежить від контракту; домен у контракт не протікає, `OrderId` лишається в `core`, на дріт іде `UUID`.
 
-Redis і Kafka описані в `compose.yaml` і перевірені окремо, але `core` до них ще не підключений. Outbox і Dockerfile попереду.
+Подія поки нікуди не публікується: мапінг `Order.toOrderCreated()` написаний і покритий тестом, але викликача немає. Наступне — outbox-таблиця, щоб подія писалась у тій самій транзакції, що й замовлення. Redis і Kafka описані в `compose.yaml` і перевірені окремо, але `core` до них ще не підключений. Dockerfile — після подій.
 
 ## Що вже зроблено
 
@@ -31,13 +31,15 @@ Redis і Kafka описані в `compose.yaml` і перевірені окре
 | `OrderRepository` на `JdbcClient` | готово | `OrderRepositoryTest` |
 | `POST /api/v1/orders` і `GET /api/v1/orders/{id}` | готово | `OrderApiTest` (MockMvc) |
 | `404` через `ProblemDetail` | готово | `OrderApiTest` |
-| Testcontainers: API і репозиторій | готово | 4 тести, 0 падінь |
-| `libs/contract` | порожній, чекає `OrderCreated` | — |
-| Redis і Kafka в `core` | ні, наступні кроки | — |
-| Outbox | ні, після `OrderCreated` | — |
+| Testcontainers: API і репозиторій | готово | 5 тестів, 0 падінь |
+| `OrderCreated` у `libs/contract` | готово | `:libs:contract:build`, нуль залежностей |
+| `core → contract` і мапінг `Order.toOrderCreated()` | готово | `OrderMappingsTest` |
+| `Clock` з точністю до мікросекунд | готово | перевірено на JDK 21: `nanos` кратні 1000; round-trip у `OrderRepositoryTest` |
+| Redis і Kafka в `core` | ні, після outbox | — |
+| Outbox | ні, наступний крок | — |
 | Dockerfile для `core` | ні, після подій | — |
 
-Поточний зріз `orders` ще не закомічений. `git status` показує зміни в `gradle/libs.versions.toml` і `services/core/build.gradle.kts`, видалений `libs/contract/.../OrderId.kt` і нові теки `core/config`, `core/order`, `resources/db`, `test/.../order`. Наступний крок — checkpoint-коміт цього зрізу.
+Зріз `orders` закомічений у `a651f78`. Незакомічені зараз: `OrderCreated` у контракті, залежність `core → contract`, `OrderMappings.kt` із тестом і `Clock`, обрізаний до мікросекунд. Наступний крок — коміт цих змін, потім outbox.
 
 ### Стан інфраструктури
 
@@ -72,6 +74,11 @@ Redis і Kafka описані в `compose.yaml` і перевірені окре
 | Статус — `varchar(32)` + check constraint | явно документує допустимі стани й ловить помилки в БД | новий статус вимагає міграції; це прийнятна ціна |
 | `POST /api/v1/orders` поки без тіла | перший зріз перевіряє ланцюжок, а не модель замовлення | поля з'являться разом із `CreateOrderRequest` і валідацією |
 | `Clock` як бін | тести можуть фіксувати час, а не залежати від `Instant.now()` | без нього тест створення залежить від реального часу |
+| `Clock` обрізає час до мікросекунд (`Clock.tick(..., 1 µs)`) | `timestamptz` у Postgres мікросекундний; інакше `createdAt` у памʼяті й у БД різняться на нано | порівняння після round-trip падає на рівному місці |
+| `occurredAt` — `Instant`, на дроті ISO-8601 | UTC без зсуву й двозначності; Jackson 3 віддає рядок, а не epoch-число | `OffsetDateTime` тягне зсув у кожне повідомлення, `String` — ручний парсинг у кожного споживача |
+| Подія в минулому часі (`OrderCreated`), без `status` | подія — факт, що вже стався; статус дублювався б у кожному повідомленні | `CreateOrder`-команда має інші гарантії й поки не потрібна |
+| `libs/contract` без Spring, Jackson і домену | нуль залежностей — будь-яке протікання видно в `build.gradle.kts` одразу | інакше geo-route тягне домен замовлень або свою версію Jackson |
+| Мапінг домен → контракт — `internal` extension у `core.order` | залежність односпрямована `core → contract`; домен і контракт не знають один про одного | метод у `Order` або фабрика в контракті розвертають залежність і тягнуть зайве в тести |
 | Jackson 3-модуль `tools.jackson.module:jackson-module-kotlin` + `kotlin-reflect` | Boot 4 використовує Jackson 3, не Jackson 2 | Jackson 2-модуль не буде підхоплений |
 | API-тест — повний `@SpringBootTest` + `@AutoConfigureMockMvc` | перевіряє контролер, сервіс, репозиторій, Jackson і Flyway разом | зріз не побачить повного ланцюжка |
 | Репозиторний тест — `@JdbcTest` з `@AutoConfigureTestDatabase(NONE)` | швидкий зріз без вебшару й актуатора | без `Replace.NONE` Boot підмінить `DataSource` вбудованою базою |
@@ -96,21 +103,23 @@ Spring Boot `4.2.0` керує: Spring Framework `7.1.0`, Tomcat `11.0.27`, Hika
 
 ## Питання, на якому зупинились
 
-1. Наступний крок: `OrderCreated` + outbox + Kafka чи спершу Redis та ідемпотентність? Логічний порядок — подія, outbox, Kafka, потім Redis.
-2. Коли додавати поля замовлення (отримувач, адреса) і `CreateOrderRequest`: до Kafka чи після?
-3. Формат `OrderId` на дроті: `UUID` у JSON чи явний `String` у DTO. Зараз використовується `UUID`.
-4. Чи потрібен `OrderStatus` у contract зараз, чи достатньо в домені до появи подій зі статусами.
+Вирішено: порядок — подія, outbox, Kafka, Redis; `occurredAt` — `Instant`; на дроті `UUID`, не `OrderId`; статусу в contract поки немає.
+
+Відкрито:
+
+1. `eventId` у контракті: додати разом із першим consumer'ом, бо без нього немає ключа дедуплікації. Вирішити, чи це поле події, чи `id` рядка outbox.
+2. `eventType` або envelope: потрібні, коли в `corridor.orders` стане більше одного типу подій.
+3. Коли додавати поля замовлення (отримувач, адреса) і `CreateOrderRequest`: до Kafka чи після?
 
 ## Наступні кроки, по порядку
 
-1. Закомітити зріз `orders` (Flyway, домен, репозиторій, API, тести).
-2. Додати `OrderCreated` у `libs/contract`: `orderId: UUID`, `occurredAt: Instant` або ISO-рядок.
-3. Створити outbox-таблицю і писати подію в тій самій транзакції, що й замовлення.
-4. Підключити Kafka: продюсер читає outbox, публікує в `corridor.orders`; додати consumer.
-5. Redis — для ідемпотентності `POST` або кешу.
-6. Додати поля замовлення й `CreateOrderRequest` з валідацією.
-7. Dockerfile для `core` і перехід на імена сервісів `postgres`, `redis`, `kafka`.
-8. Далі за планом: geo-route, delivery-plugin, адмінка.
+1. Закомітити `OrderCreated`, мапінг і `Clock` до мікросекунд.
+2. Outbox-таблиця: подія пишеться в тій самій транзакції, що й замовлення.
+3. Kafka: продюсер читає outbox без блокування рядків (`FOR UPDATE SKIP LOCKED`), публікує в `corridor.orders`, позначає як опубліковане; додати consumer.
+4. Redis — для ідемпотентності `POST` або кешу.
+5. Додати поля замовлення й `CreateOrderRequest` з валідацією.
+6. Dockerfile для `core` і перехід на імена сервісів `postgres`, `redis`, `kafka`.
+7. Далі за планом: geo-route, delivery-plugin, адмінка.
 
 ## Як відновити середовище з нуля
 
@@ -187,7 +196,9 @@ docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server loca
 
 - Корінь не застосовує плагінів; модуль не вказує версію плагіна; модуль не має блоку `repositories`.
 - Пакети `io.github.foxx.corridor.<модуль>`, тека дзеркалить пакет.
-- `libs/contract` містить лише те, що літає по дроту. Entity, репозиторії й сервіси — ні. Зараз модуль порожній до появи `OrderCreated`.
+- `libs/contract` містить лише те, що літає по дроту. Entity, репозиторії й сервіси — ні. Зараз там `OrderCreated`, і модуль не має жодної залежності.
+- Час у контракті — `Instant` (UTC), на дроті ISO-8601; `Clock` у `core` обрізає до мікросекунд.
+- Мапінг домен → контракт живе в `core`, не в контракті й не в домені.
 - Команди Gradle на Windows — через `.\gradlew.bat`.
 - `compose.yaml` живе в корені репозиторію; `.env` не комітиться, `.env.example` комітиться.
 - Теми Kafka називаються `corridor.<агрегат>`, наприклад `corridor.orders`.
