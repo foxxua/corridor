@@ -22,6 +22,15 @@ dependencies {
     testImplementation(libs.testcontainers.junit.jupiter)
     testImplementation(libs.testcontainers.postgresql)
     testRuntimeOnly(libs.junit.platform.launcher)
+
+    implementation(libs.spring.boot.starter.flyway)
+    runtimeOnly(libs.flyway.database.postgresql)
+
+    implementation(libs.jackson.module.kotlin)
+    implementation(libs.kotlin.reflect)
+
+    testImplementation(libs.spring.boot.starter.webmvc.test)
+    testImplementation(libs.spring.boot.starter.jdbc.test)
 }
 
 tasks.withType<Test> {
