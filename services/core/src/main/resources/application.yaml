@@ -2,6 +2,12 @@ spring:
   application:
     name: core
 
+  kafka:
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+
 server:
   port: 8081
 
@@ -13,3 +19,7 @@ management:
   endpoint:
     health:
       show-details: always
+
+corridor:
+  outbox:
+    scheduler-enabled: false

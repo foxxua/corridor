@@ -33,6 +33,9 @@ dependencies {
 
     testImplementation(libs.spring.boot.starter.webmvc.test)
     testImplementation(libs.spring.boot.starter.jdbc.test)
+
+    implementation(libs.spring.boot.starter.kafka)
+    testImplementation(libs.testcontainers.kafka)
 }
 
 tasks.withType<Test> {

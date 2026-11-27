@@ -19,6 +19,8 @@ spring-boot-starter-flyway = { module = "org.springframework.boot:spring-boot-st
 flyway-database-postgresql = { module = "org.flywaydb:flyway-database-postgresql" }
 jackson-module-kotlin = { module = "tools.jackson.module:jackson-module-kotlin" }
 kotlin-reflect = { module = "org.jetbrains.kotlin:kotlin-reflect" }
+spring-boot-starter-kafka = { module = "org.springframework.boot:spring-boot-starter-kafka" }
+testcontainers-kafka      = { module = "org.testcontainers:testcontainers-kafka" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

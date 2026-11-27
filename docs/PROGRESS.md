@@ -1,18 +1,18 @@
 # Прогрес
 
-Оновлено: 25.11.2026
+Оновлено: 27.11.2026
 
 Цей файл — точка входу для того, хто повертається до проєкту після перерви: що вже стоїть, чому саме так і з чого продовжувати. Живий стан, а не історія: застаріле виправляється, а не дописується внизу.
 
 ## Де ми зараз
 
-Сервіс `core` працює на Spring Boot 4.2.0. Є перший вертикальний зріз `orders`: Flyway-міграція створює таблицю, домен і `JdbcClient`-репозиторій читають і пишуть замовлення, `POST /api/v1/orders` і `GET /api/v1/orders/{id}` працюють, неіснуючий id дає `404`.
+Сервіс `core` працює на Spring Boot 4.2.0. Є вертикальний зріз `orders`: Flyway-міграції `V1` і `V2`, домен і `JdbcClient`-репозиторій читають і пишуть замовлення, `POST /api/v1/orders` і `GET /api/v1/orders/{id}` працюють, неіснуючий id дає `404`.
 
-Тести проходять: `PostgresConnectionTest`, `OrderRepositoryTest` (зріз `@JdbcTest`), `OrderApiTest` (повний контекст + `@AutoConfigureMockMvc`) і `OrderMappingsTest` (чистий JUnit, без Spring). Разом 5 тестів, 0 падінь. `.\gradlew.bat build` зелений.
+Тести проходять: `PostgresConnectionTest`, `OrderRepositoryTest` (зріз `@JdbcTest`), `OrderApiTest` (повний контекст, `@AutoConfigureMockMvc` і перевірка payload в outbox), `OrderMappingsTest` (чистий JUnit), `OutboxRepositoryTest`, `OrderCreationTransactionTest`, `OutboxPublisherTest` і `OutboxPublisherFailureTest`. Разом 9 тестів, 0 падінь. `.\gradlew.bat build` зелений.
 
-`libs/contract` більше не порожній: там `OrderCreated(orderId: UUID, occurredAt: Instant)`, і модуль досі має нуль залежностей. `core` залежить від контракту; домен у контракт не протікає, `OrderId` лишається в `core`, на дріт іде `UUID`.
+`libs/contract` містить `OrderCreated(orderId: UUID, occurredAt: Instant)` і не має жодної залежності. `core` залежить від контракту; домен у контракт не протікає, `OrderId` лишається в `core`, на дріт іде `UUID`.
 
-Подія поки нікуди не публікується: мапінг `Order.toOrderCreated()` написаний і покритий тестом, але викликача немає. Наступне — outbox-таблиця, щоб подія писалась у тій самій транзакції, що й замовлення. Redis і Kafka описані в `compose.yaml` і перевірені окремо, але `core` до них ще не підключений. Dockerfile — після подій.
+Подія пишеться в outbox у тій самій транзакції, що й замовлення (`V2`), а реле `OutboxPublisher` публікує її в `corridor.orders`, беручи рядки `FOR UPDATE SKIP LOCKED`, і позначає `published_at`. Фоновий цикл вмикає лише профіль `local`; тести викликають `publishBatch()` напряму. Consumer і Redis ще не підключені, Dockerfile — після consumer'а.
 
 ## Що вже зроблено
 
@@ -31,15 +31,19 @@
 | `OrderRepository` на `JdbcClient` | готово | `OrderRepositoryTest` |
 | `POST /api/v1/orders` і `GET /api/v1/orders/{id}` | готово | `OrderApiTest` (MockMvc) |
 | `404` через `ProblemDetail` | готово | `OrderApiTest` |
-| Testcontainers: API і репозиторій | готово | 5 тестів, 0 падінь |
+| Testcontainers: Postgres і Kafka | готово | 9 тестів, 0 падінь |
 | `OrderCreated` у `libs/contract` | готово | `:libs:contract:build`, нуль залежностей |
 | `core → contract` і мапінг `Order.toOrderCreated()` | готово | `OrderMappingsTest` |
 | `Clock` з точністю до мікросекунд | готово | перевірено на JDK 21: `nanos` кратні 1000; round-trip у `OrderRepositoryTest` |
-| Redis і Kafka в `core` | ні, після outbox | — |
-| Outbox | ні, наступний крок | — |
-| Dockerfile для `core` | ні, після подій | — |
+| Outbox-таблиця `V2` і запис події в транзакції | готово | `OutboxRepositoryTest`, `OrderCreationTransactionTest` |
+| Серіалізація `OrderCreated` у payload | готово | `OrderApiTest`: `payload->>'occurredAt'` парситься як `Instant` |
+| Реле `OutboxPublisher` + `OutboxRelay` | готово | `OutboxPublisherTest`, `OutboxPublisherFailureTest` |
+| Kafka-конфіг, `StringSerializer`, `acks: all` | готово | `OutboxPublisherTest` |
+| Consumer і дедуплікація | ні, наступний крок | — |
+| Redis в `core` | ні, після consumer'а | — |
+| Dockerfile для `core` | ні, після consumer'а | — |
 
-Зріз `orders` закомічений у `a651f78`. Незакомічені зараз: `OrderCreated` у контракті, залежність `core → contract`, `OrderMappings.kt` із тестом і `Clock`, обрізаний до мікросекунд. Наступний крок — коміт цих змін, потім outbox.
+Закомічено: зріз `orders` (`a651f78`) і `OrderCreated` з мапінгом (`90a6881`). Незакомічені зараз: `V2__create_outbox.sql`, пакет `core.outbox`, `SchedulingConfiguration`, Kafka-залежності й конфіг, тестові `KafkaTestcontainersConfiguration`, `KafkaTestTopics`, `KafkaTestMessages` та чотири нові тестові класи. Наступний крок — коміт цього зрізу, потім consumer.
 
 ### Стан інфраструктури
 
@@ -48,6 +52,7 @@
 - **Kafka 4.4.0** в KRaft, вузол 1, ролі `broker,controller`. Слухачі: `INTERNAL:29092`, `EXTERNAL:9092`, `CONTROLLER:9093`. Рекламуються `kafka:29092` для compose і `localhost:9092` для хоста. Том `corridor-kafka` у `/var/lib/kafka/data`, `KAFKA_LOG_DIRS` вказує туди ж. Порт `127.0.0.1:9092`.
 - **kafka-ui v1.5.1**, порт `8090`, bootstrap `kafka:29092`, стартує після `condition: service_healthy`.
 - Тема `corridor.orders` створена вручну, розширена до 3 партицій. `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`, тому нові теми створюють явно.
+- Тести піднімають власний `apache/kafka:4.4.0` і створюють тему самі через `KafkaTestTopics` (`AdminClient`), не покладаючись на auto-create.
 - Перевірені ключі, партиції, offsets і consumer group `corridor-learners` з `LAG=0`.
 - `container_name` прибрано, щоб не ламати масштабування й копії проєкту.
 
@@ -84,38 +89,48 @@
 | Репозиторний тест — `@JdbcTest` з `@AutoConfigureTestDatabase(NONE)` | швидкий зріз без вебшару й актуатора | без `Replace.NONE` Boot підмінить `DataSource` вбудованою базою |
 | У `@JdbcTest` Flyway імпортується явно | зріз JDBC не включає Flyway-автоконфігурацію | без `FlywayAutoConfiguration` таблиці `orders` не буде |
 | Testcontainers 2.0.5, `@TestConfiguration` + `@ServiceConnection` | контейнер описаний в одному місці, життєвий цикл керує Spring Boot | `@Container` у кожному тесті дублює конфігурацію; разом із біном буде два контейнери |
-| Образ у тестах — `postgres:18.6`, як у compose | локальна й тестова бази не розходяться за версією | `latest` робить тести непередбачуваними |
+| Образи в тестах — `postgres:18.6` і `apache/kafka:4.4.0`, як у compose | локальна й тестова інфраструктура не розходяться за версією | `latest` робить тести непередбачуваними |
 | Тести не використовують профіль `local` і `.env` | Testcontainers сам дає URL, користувача й пароль; тест повторюваний у CI | тести на `localhost:5432` залежать від стану машини й можуть псувати дані |
 | `show-details: always` для health | локальна діагностика: видно компоненти й причину `DOWN` | у продакшені деталі health розкривають інфраструктуру; там їх ховають |
 | `core` спершу через `bootRun` | швидкий цикл розробки; контейнеризація після подій | контейнер одразу вимагає Dockerfile і перезбірки на кожну зміну |
+| Outbox замість прямого `send` з сервісу | подія і замовлення комітяться разом; публікація стає повторюваною дією, без dual write | прямий `send` у треді запиту губить події при падінні брокера або відкочує замовлення при падінні `send` |
+| At-least-once: `send` → `published_at = now()` → commit | дублікат дешевший за втрату; дедуплікація буде на consumer'і | зворотний порядок дає at-most-once, тобто тихі втрати |
+| `FOR UPDATE SKIP LOCKED`, `order by id`, пачка 50 | паралельні інстанси не блокують один одного; черга не вичитується в памʼять; `id bigint identity` дає стабільний порядок і локальний індекс | звичайний `FOR UPDATE` серіалізує реле, запит без `limit` тягне всю таблицю, `uuid` втрачає порядок вставки |
+| `payload jsonb` і окремий `partition_key` | JSON валідований БД; ключ = `orderId`, тож події одного замовлення в одній партиції | ключ із `payload->>'orderId'` робить реле залежним від форми JSON |
+| `StringSerializer`, payload — готовий JSON-рядок | outbox уже зберігає рядок; немає подвійної серіалізації й type headers | `JsonSerializer` загорнув би рядок у рядок або привʼязав споживача до класу |
+| Реле під `@ConditionalOnProperty`, у тестах вимкнене | фоновий цикл у тестах — шум і флейки; `publishBatch()` тестується напряму | увімкнений планувальник у тестах стукає в `localhost:9092` кожні 500 мс |
+| `@ServiceConnection` дає бін `KafkaConnectionDetails`, не property | тому bootstrap у тестах беруть з `KafkaContainer.bootstrapServers` | `@Value("\${spring.kafka.bootstrap-servers}")` у тесті не резолвиться |
+| Тестові топіки створюють явно через `AdminClient` | у compose `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`, тести не мають жити на іншій конфігурації | auto-create дає 1 партицію замість 3 і хвилинні ретраї при помилці |
 
 ## Версії
 
 Зафіксовані зараз: Kotlin `2.4.21`, Gradle `9.6.0` (wrapper), JDK `21`.
 
-Spring Boot `4.2.0` керує: Spring Framework `7.1.0`, Tomcat `11.0.27`, HikariCP `7.1.0`, драйвер PostgreSQL `42.7.14`, Testcontainers `2.0.5`, JUnit Jupiter `6.1.3`, Flyway `12.11.0`, Jackson `3.1.8`.
+Spring Boot `4.2.0` керує: Spring Framework `7.1.0`, Tomcat `11.0.27`, HikariCP `7.1.0`, драйвер PostgreSQL `42.7.14`, Testcontainers `2.0.5`, JUnit Jupiter `6.1.3`, Flyway `12.11.0`, Jackson `3.1.8`, Spring Kafka `4.2.0`, kafka-clients `4.4.0`.
 
 Інфраструктура: `postgres:18.6`, `redis:8.12.0`, `apache/kafka:4.4.0`, `kafbat/kafka-ui:v1.5.1`.
 
-Заплановані, але ще не підключені: Spring Cloud `2026.0.0` (Gateway `5.1.0`), springdoc `3.2.1`, Kafka-клієнт, Redis-клієнт. JPA — лише якщо буде вирішено відмовитися від явного SQL.
+Заплановані, але ще не підключені: Spring Cloud `2026.0.0` (Gateway `5.1.0`), springdoc `3.2.1`, Redis-клієнт. JPA — лише якщо буде вирішено відмовитися від явного SQL.
 
 Важливо для Boot 4: Jackson 3 має координату Kotlin-модуля `tools.jackson.module:jackson-module-kotlin`, а не `com.fasterxml.jackson.module`. Модуль уже підключений і використовується для REST.
 
 ## Питання, на якому зупинились
 
-Вирішено: порядок — подія, outbox, Kafka, Redis; `occurredAt` — `Instant`; на дроті `UUID`, не `OrderId`; статусу в contract поки немає.
+Вирішено: порядок — подія, outbox, Kafka, Redis; `occurredAt` — `Instant`; на дроті `UUID`, не `OrderId`; статусу в contract поки немає; продюсер пише через outbox, реле публікує at-least-once.
 
 Відкрито:
 
-1. `eventId` у контракті: додати разом із першим consumer'ом, бо без нього немає ключа дедуплікації. Вирішити, чи це поле події, чи `id` рядка outbox.
-2. `eventType` або envelope: потрібні, коли в `corridor.orders` стане більше одного типу подій.
-3. Коли додавати поля замовлення (отримувач, адреса) і `CreateOrderRequest`: до Kafka чи після?
+1. `eventId` у контракті — перше питання кроку consumer'а: окреме поле події чи `id` рядка outbox. Без нього дедуплікація неможлива.
+2. Дедуплікація: таблиця оброблених `eventId` у БД чи Redis (`SET NX EX`), і на який термін тримати ключ.
+3. `eventType` або envelope: потрібні, коли в `corridor.orders` стане більше одного типу подій.
+4. Retention outbox і отруйні рядки: коли чистити опубліковані, чи додавати `attempts` і DLQ.
+5. Коли додавати поля замовлення (отримувач, адреса) і `CreateOrderRequest`: до consumer'а чи після?
 
 ## Наступні кроки, по порядку
 
-1. Закомітити `OrderCreated`, мапінг і `Clock` до мікросекунд.
-2. Outbox-таблиця: подія пишеться в тій самій транзакції, що й замовлення.
-3. Kafka: продюсер читає outbox без блокування рядків (`FOR UPDATE SKIP LOCKED`), публікує в `corridor.orders`, позначає як опубліковане; додати consumer.
+1. Закомітити outbox, реле й Kafka-конфіг.
+2. Consumer: `eventId` у контракті, `@KafkaListener`, дедуплікація по `eventId`.
+3. Outbox retention і отруйні рядки: `attempts`, DLQ, чистка опублікованих.
 4. Redis — для ідемпотентності `POST` або кешу.
 5. Додати поля замовлення й `CreateOrderRequest` з валідацією.
 6. Dockerfile для `core` і перехід на імена сервісів `postgres`, `redis`, `kafka`.
@@ -155,6 +170,16 @@ curl.exe -i -X POST http://localhost:8081/api/v1/orders
 curl.exe http://localhost:8081/api/v1/orders/<uuid>
 ```
 
+Перевірка outbox і реле (реле працює лише з профілем `local`):
+
+```powershell
+curl.exe -i -X POST http://localhost:8081/api/v1/orders
+docker compose exec postgres psql -U corridor -d corridor -c "select id, topic, partition_key, payload, published_at from outbox;"
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic corridor.orders --from-beginning --max-messages 1
+```
+
+Очікування: рядок в outbox із заповненим `published_at` і те саме повідомлення в топіку. Якщо `published_at` порожній — реле вимкнене (`corridor.outbox.scheduler-enabled`) або Kafka недоступна; у лозі буде `outbox publish failed`.
+
 Перевірка схеми:
 
 ```powershell
@@ -168,7 +193,7 @@ docker compose exec postgres psql -U corridor -d corridor -c "select version, de
 .\gradlew.bat :services:core:test
 ```
 
-Тестам потрібен запущений Docker: Testcontainers сам піднімає `postgres:18.6`, compose для тестів не потрібен.
+Тестам потрібен запущений Docker: Testcontainers сам піднімає `postgres:18.6` і `apache/kafka:4.4.0`, compose для тестів не потрібен.
 
 Перевірка інфраструктури:
 
@@ -202,6 +227,11 @@ docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server loca
 - Команди Gradle на Windows — через `.\gradlew.bat`.
 - `compose.yaml` живе в корені репозиторію; `.env` не комітиться, `.env.example` комітиться.
 - Теми Kafka називаються `corridor.<агрегат>`, наприклад `corridor.orders`.
+- Назовні — тільки через outbox: сервіс пише подію в транзакції з бізнес-даними, реле публікує. Прямий `KafkaTemplate.send` із сервісу не використовуємо.
+- Реле вимкнене в тестах: `corridor.outbox.scheduler-enabled=false` у базовому YAML, `true` в local; тести кличуть `publishBatch()` напряму.
+- Реле читає `FOR UPDATE SKIP LOCKED` малими пачками й ставить `published_at`; рядки не видаляє.
+- Тестові топіки створюються явно (`KafkaTestTopics`), bootstrap беруть з `KafkaContainer`, а не з property.
+- Postgres і Kafka для тестів — окремі `@TestConfiguration`, щоб `@JdbcTest` не піднімав брокера.
 - Локальний конфіг — `application-local.yaml`; базовий `application.yaml` не містить ні `localhost`, ні секретів.
 - Профіль `local` активують лише для ручного запуску; тести його не використовують.
 - Тести з базою — через Testcontainers; образ має збігатися з `compose.yaml`.
